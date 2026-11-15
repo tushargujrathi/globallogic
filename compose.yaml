@@ -1,0 +1,115 @@
+name: tenant-control-plane
+
+x-app-env: &app-env
+  DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:?see .env.example}:${POSTGRES_PASSWORD:?see .env.example}@postgres:5432/${POSTGRES_DB:?see .env.example}
+  RABBITMQ_URL: amqp://${RABBITMQ_USER:?see .env.example}:${RABBITMQ_PASSWORD:?see .env.example}@rabbitmq:5672/%2F?heartbeat=30
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+
+x-app: &app
+  image: tenant-control-plane:local
+  build:
+    context: .
+    target: runtime
+  restart: unless-stopped
+  environment: *app-env
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./docker/postgres:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  rabbitmq:
+    image: rabbitmq:4.1-management-alpine
+    hostname: rabbitmq  # the data directory is keyed by node name
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
+    ports:
+      - "${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD-SHELL", "rabbitmq-diagnostics -q check_running && rabbitmq-diagnostics -q check_port_connectivity"]
+      interval: 3s
+      timeout: 10s
+      retries: 40
+
+  api:
+    <<: *app
+    # Single API replica runs the migrations before serving.
+    command: ["sh", "-c", "alembic upgrade head && exec control-plane api"]
+    ports:
+      - "${API_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  relay:
+    <<: *app
+    command: ["control-plane", "relay"]
+    depends_on:
+      api:
+        condition: service_healthy  # schema migrated
+      rabbitmq:
+        condition: service_healthy
+
+  consumer:
+    <<: *app
+    command: ["control-plane", "consumer"]
+    depends_on:
+      api:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  worker:
+    <<: *app
+    entrypoint: ["worker-simulator"]
+    command: []
+    environment:  # broker only: the worker never touches the database
+      RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/%2F?heartbeat=30
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      WORKER_FAIL_RATE: ${WORKER_FAIL_RATE:-0}
+      WORKER_MIN_DELAY_MS: ${WORKER_MIN_DELAY_MS:-500}
+      WORKER_MAX_DELAY_MS: ${WORKER_MAX_DELAY_MS:-2000}
+      WORKER_DUPLICATE_RATE: ${WORKER_DUPLICATE_RATE:-0}
+      WORKER_OUT_OF_ORDER_RATE: ${WORKER_OUT_OF_ORDER_RATE:-0}
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
+  # `make test` / `make lint`: not started by `make up`.
+  tests:
+    profiles: ["test"]
+    image: tenant-control-plane:dev
+    build:
+      context: .
+      target: dev
+    restart: "no"
+    environment:
+      TEST_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/control_plane_test
+      E2E_API_URL: http://api:8000
+      E2E_RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/%2F
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres-data:
+  rabbitmq-data:
