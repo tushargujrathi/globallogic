@@ -10,22 +10,19 @@ import random
 import uuid
 from dataclasses import dataclass
 from datetime import timedelta
-from functools import partial
 from typing import Any
 
 from pika.adapters.blocking_connection import BlockingConnection
-from pika.exceptions import AMQPError
 from pydantic import ValidationError
 
 from control_plane.core.clock import utcnow
 from control_plane.domain.enums import TaskStatus
-from control_plane.messaging.connection import connect
+from control_plane.messaging.connection import consume_forever
 from control_plane.messaging.contracts import TaskEvent, TaskUpdate
 from control_plane.messaging.publisher import publish_json
 from control_plane.messaging.topology import (
     TASK_UPDATES_EXCHANGE,
     TASKS_QUEUE,
-    declare_topology,
     task_update_routing_key,
 )
 from worker_simulator.config import SimulationConfig
@@ -89,23 +86,10 @@ class WorkerSimulator:
     def run(self) -> None:
         """Consume tasks forever, reconnecting whenever the broker connection is lost."""
         logger.info("Worker simulator started with %s", self._config)
-        while True:
-            connection = connect(self._url)
-            try:
-                channel = connection.channel()
-                declare_topology(channel)
-                channel.confirm_delivery()
-                channel.basic_qos(prefetch_count=1)
-                channel.basic_consume(
-                    TASKS_QUEUE, on_message_callback=partial(self._on_task, connection)
-                )
-                channel.start_consuming()
-            except AMQPError as exc:
-                logger.warning("Lost broker connection (%r); reconnecting", exc)
-            except KeyboardInterrupt:
-                if connection.is_open:
-                    connection.close()
-                return
+        # Confirm mode: each update is published on the consuming channel.
+        consume_forever(
+            self._url, TASKS_QUEUE, self._on_task, prefetch_count=1, confirm_delivery=True
+        )
 
     def _on_task(
         self, connection: BlockingConnection, channel: Any, method: Any, _props: Any, body: bytes

@@ -14,18 +14,16 @@ Failure policy:
 
 import logging
 from enum import StrEnum
-from functools import partial
 from typing import Any
 
 from pika.adapters.blocking_connection import BlockingConnection
-from pika.exceptions import AMQPError
 from pydantic import ValidationError
 from sqlalchemy.orm import Session, sessionmaker
 
 from control_plane.domain.errors import TaskNotFoundError
-from control_plane.messaging.connection import backoff_delay, connect
+from control_plane.messaging.connection import backoff_delay, consume_forever
 from control_plane.messaging.contracts import TaskUpdate
-from control_plane.messaging.topology import TASK_UPDATES_QUEUE, declare_topology
+from control_plane.messaging.topology import TASK_UPDATES_QUEUE
 from control_plane.services.task_updates import TaskUpdateService
 
 logger = logging.getLogger(__name__)
@@ -80,23 +78,9 @@ class TaskUpdateConsumer:
 
     def run(self) -> None:
         """Consume forever, reconnecting whenever the broker connection is lost."""
-        while True:
-            connection = connect(self._url)
-            try:
-                channel = connection.channel()
-                declare_topology(channel)
-                channel.basic_qos(prefetch_count=self._prefetch_count)
-                channel.basic_consume(
-                    TASK_UPDATES_QUEUE, on_message_callback=partial(self.on_message, connection)
-                )
-                logger.info("Consuming %s", TASK_UPDATES_QUEUE)
-                channel.start_consuming()
-            except AMQPError as exc:
-                logger.warning("Lost broker connection (%r); reconnecting", exc)
-            except KeyboardInterrupt:
-                if connection.is_open:
-                    connection.close()
-                return
+        consume_forever(
+            self._url, TASK_UPDATES_QUEUE, self.on_message, prefetch_count=self._prefetch_count
+        )
 
     def on_message(
         self,

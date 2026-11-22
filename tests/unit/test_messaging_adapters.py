@@ -5,8 +5,12 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, call
 from uuid import uuid4
 
+import pytest
+from pika.exceptions import AMQPConnectionError
+
 from control_plane.core.clock import utcnow
 from control_plane.domain.enums import TaskStatus, TaskType
+from control_plane.messaging import connection as connection_module
 from control_plane.messaging.contracts import TaskEvent
 from control_plane.messaging.publisher import publish_json
 from control_plane.messaging.topology import (
@@ -86,3 +90,24 @@ def test_worker_rejects_malformed_task_without_requeue() -> None:
     _, channel = _deliver_task(b"garbage", SimulationConfig())
     channel.basic_reject.assert_called_once_with(5, requeue=False)
     channel.basic_publish.assert_not_called()
+
+
+def test_consume_forever_reconnects_after_a_broker_error_and_stops_on_interrupt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lost, stopped = MagicMock(), MagicMock()
+    lost.channel.return_value.start_consuming.side_effect = AMQPConnectionError("gone")
+    stopped.channel.return_value.start_consuming.side_effect = KeyboardInterrupt
+    connections = iter([lost, stopped])
+    monkeypatch.setattr(connection_module, "connect", lambda _url: next(connections))
+
+    connection_module.consume_forever(
+        "amqp://unused", TASKS_QUEUE, MagicMock(), prefetch_count=3, confirm_delivery=True
+    )
+
+    for conn in (lost, stopped):
+        channel = conn.channel.return_value
+        channel.confirm_delivery.assert_called_once_with()
+        channel.basic_qos.assert_called_once_with(prefetch_count=3)
+        assert channel.basic_consume.call_args.args == (TASKS_QUEUE,)
+    stopped.close.assert_called_once_with()

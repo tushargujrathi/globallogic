@@ -1,12 +1,20 @@
-"""Broker connection with retry, and the backoff policy shared by every retry loop."""
+"""Broker connection with retry, the shared consume loop, and the backoff policy."""
 
 import logging
 import random
 import time
+from collections.abc import Callable
+from functools import partial
+from typing import Any
 
 import pika
 from pika.adapters.blocking_connection import BlockingConnection
-from pika.exceptions import AMQPConnectionError
+from pika.exceptions import AMQPConnectionError, AMQPError
+
+from control_plane.messaging.topology import declare_topology
+
+MessageCallback = Callable[[BlockingConnection, Any, Any, Any, bytes], None]
+"""``(connection, channel, method, properties, body)``: pika's callback plus the connection."""
 
 logger = logging.getLogger(__name__)
 
@@ -32,3 +40,35 @@ def connect(url: str) -> BlockingConnection:
         else:
             logger.info("Connected to broker")
             return connection
+
+
+def consume_forever(
+    url: str,
+    queue: str,
+    on_message: MessageCallback,
+    *,
+    prefetch_count: int,
+    confirm_delivery: bool = False,
+) -> None:
+    """Consume ``queue`` until interrupted, reconnecting whenever the connection is lost.
+
+    ``confirm_delivery`` puts the channel in confirm mode, for callbacks that
+    also publish on it.
+    """
+    while True:
+        connection = connect(url)
+        try:
+            channel = connection.channel()
+            declare_topology(channel)
+            if confirm_delivery:
+                channel.confirm_delivery()
+            channel.basic_qos(prefetch_count=prefetch_count)
+            channel.basic_consume(queue, on_message_callback=partial(on_message, connection))
+            logger.info("Consuming %s", queue)
+            channel.start_consuming()
+        except AMQPError as exc:
+            logger.warning("Lost broker connection (%r); reconnecting", exc)
+        except KeyboardInterrupt:
+            if connection.is_open:
+                connection.close()
+            return
