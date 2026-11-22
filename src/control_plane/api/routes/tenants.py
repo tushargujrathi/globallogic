@@ -50,12 +50,7 @@ def list_tenants(
     items, total = service.list(
         status=status_filter, limit=pagination.limit, offset=pagination.offset
     )
-    return Page(
-        items=[TenantOut.model_validate(item) for item in items],
-        total=total,
-        limit=pagination.limit,
-        offset=pagination.offset,
-    )
+    return Page[TenantOut].build(items, total, limit=pagination.limit, offset=pagination.offset)
 
 
 @router.get("/{tenant_id}", responses=error_responses(404), summary="Get a tenant")

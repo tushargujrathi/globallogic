@@ -2,11 +2,13 @@
 
 import re
 from datetime import UTC, datetime, timedelta, timezone
+from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
 from pydantic import ValidationError
 
-from control_plane.api.schemas import TenantCreate, TenantUpdate
+from control_plane.api.schemas import Page, TenantCreate, TenantOut, TenantUpdate
 from control_plane.core.clock import isoformat_ms, utcnow
 
 VALID_SLUGS = ["abc", "a-b", "a1b", "team-42", "a" * 28, "a" + "-" * 26 + "b"]
@@ -85,3 +87,19 @@ def test_utcnow_is_utc_with_millisecond_precision() -> None:
 def test_isoformat_ms(value: datetime, expected: str) -> None:
     assert isoformat_ms(value) == expected
     assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z", isoformat_ms(value))
+
+
+def test_page_build_converts_orm_rows() -> None:
+    now = utcnow()
+    row = SimpleNamespace(
+        id=uuid4(),
+        slug="acme",
+        name="Acme",
+        status="active",
+        version=1,
+        created_at=now,
+        updated_at=now,
+    )
+    page = Page[TenantOut].build([row], 7, limit=1, offset=2)
+    assert page.items == [TenantOut.model_validate(row)]
+    assert (page.total, page.limit, page.offset) == (7, 1, 2)

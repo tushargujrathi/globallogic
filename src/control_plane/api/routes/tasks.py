@@ -28,12 +28,7 @@ def list_tasks(
         limit=pagination.limit,
         offset=pagination.offset,
     )
-    return Page(
-        items=[TaskOut.model_validate(item) for item in items],
-        total=total,
-        limit=pagination.limit,
-        offset=pagination.offset,
-    )
+    return Page[TaskOut].build(items, total, limit=pagination.limit, offset=pagination.offset)
 
 
 @router.get("/{task_id}", responses=error_responses(404), summary="Get a task")

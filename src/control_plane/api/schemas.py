@@ -1,5 +1,6 @@
 """Request and response bodies of the HTTP API."""
 
+from collections.abc import Iterable
 from typing import Annotated, Any, Self
 from uuid import UUID
 
@@ -76,6 +77,14 @@ class Page[T](BaseModel):
     total: int
     limit: int
     offset: int
+
+    @classmethod
+    def build(cls, items: Iterable[object], total: int, *, limit: int, offset: int) -> Self:
+        """Build a page from ORM rows, e.g. ``Page[TenantOut].build(rows, total, ...)``."""
+        return cls.model_validate(
+            {"items": items, "total": total, "limit": limit, "offset": offset},
+            from_attributes=True,
+        )
 
 
 class Error(BaseModel):
