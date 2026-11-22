@@ -172,6 +172,7 @@ api (HTTP: schemas, routes, error mapping)     messaging (AMQP: relay, consumer,
 │   │   ├── services/             # tenants (commands) · tasks (queries) · task_updates
 │   │   ├── messaging/            # contracts · topology · connection · publisher
 │   │   │                         # outbox_relay · consumer
+│   │   ├── bootstrap.py          # composition root: settings → api / relay / consumer
 │   │   └── cli.py                # `control-plane api|relay|consumer`
 │   └── worker_simulator/         # config (flags/env) · simulator · cli
 ├── migrations/                   # Alembic (schema is built only through migrations)
